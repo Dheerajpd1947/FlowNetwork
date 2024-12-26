@@ -41,6 +41,12 @@ class GTTFlowNet(QMainWindow):
         self.arrow_scale = 20
         self.focused_node = None  # For node focus feature
         self.stats_text = None  # Initialize stats_text
+        self.searched_node = None  # For search highlight
+        self.right_button_pressed = False  # For right-click selection
+        
+        # Position history for undo feature
+        self.position_history = []
+        self.max_history = 50  # Maximum number of positions to store
         
         # Initialize draggable stats frame
         self.stats_dragging = False
@@ -72,10 +78,7 @@ class GTTFlowNet(QMainWindow):
         self.toolbar = NavigationToolbar(self.canvas, viz_panel)
         
         # Connect mouse events
-        self.canvas.mpl_connect('button_press_event', self.on_mouse_press)
-        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
-        self.canvas.mpl_connect('button_release_event', self.on_mouse_release)
-        self.canvas.mpl_connect('button_press_event', self.on_double_click)
+        self.connect_events()
         
         # Connect additional mouse events for stats dragging
         self.canvas.mpl_connect('button_press_event', self.on_stats_press)
@@ -174,9 +177,13 @@ class GTTFlowNet(QMainWindow):
             self.start_button.setText("Start Animation")
             self.animation_timer.stop()
             self.animation_running = False
+            # Force an immediate update
+            self.draw_network()
+            self.canvas.draw()
+            # Reset dragging state
             self.dragging = False  # Reset dragging state
-            # Force a final update to ensure the graph is in a stable state
-            self.update_visualization()
+            # Ensure nodes can be selected after stopping animation
+            self.selected_node = None
             
     def update_layout(self):
         """Update force-directed layout"""
@@ -186,16 +193,19 @@ class GTTFlowNet(QMainWindow):
         if self.dragging:  # Skip force calculation if dragging
             return
 
+        # Save current state before force-directed update
+        self.save_position_state()
+
         # Calculate forces and update positions
         for node in self.G.nodes():
             # Skip selected nodes during animation to maintain their positions
-            if node in self.selected_nodes or node == self.selected_node:
+            if node in self.selected_nodes:
                 continue
-                
+
             # Initialize force components
             fx = 0
             fy = 0
-            
+
             # Repulsive force from other nodes
             for other in self.G.nodes():
                 if other != node:
@@ -205,7 +215,7 @@ class GTTFlowNet(QMainWindow):
                     force = self.repulsion / (dist * dist)
                     fx += force * dx / dist
                     fy += force * dy / dist
-            
+
             # Spring force from edges
             for neighbor in self.G.neighbors(node):
                 dx = self.pos[neighbor][0] - self.pos[node][0]
@@ -214,22 +224,19 @@ class GTTFlowNet(QMainWindow):
                 force = (dist - self.edge_length) * 0.1
                 fx += force * dx / dist
                 fy += force * dy / dist
-            
+
             # Update position with damping
             self.pos[node] = (
                 self.pos[node][0] + fx * self.force_strength,
                 self.pos[node][1] + fy * self.force_strength
             )
-        
+
         self.draw_network()
         self.canvas.draw()
-        
+
     def on_mouse_press(self, event):
         """Handle mouse press events"""
         if event.inaxes != self.ax or not self.G or not self.pos:
-            return
-
-        if event.button != 1:  # Only handle left clicks
             return
 
         # Get clicked node
@@ -238,27 +245,85 @@ class GTTFlowNet(QMainWindow):
         for node in self.G.nodes():
             x, y = self.pos[node]
             dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
-            if dist < 0.1:  # Increased threshold for easier selection
+            if dist < 0.15:  # Increased threshold for easier selection
                 if dist < min_dist:
                     clicked_node = node
                     min_dist = dist
 
         if clicked_node is not None:
-            self.selected_node = clicked_node
-            self.dragging = True
-            
-            # Check for Ctrl key using PyQt5
-            modifiers = QApplication.keyboardModifiers()
-            if modifiers == Qt.ControlModifier:
-                if clicked_node in self.selected_nodes:
-                    self.selected_nodes.remove(clicked_node)
+            if event.button == 1:  # Left click
+                # Save current state before modifying positions
+                self.save_position_state()
+                
+                # Clear search highlight when selecting a different node
+                if self.searched_node and clicked_node != self.searched_node:
+                    self.searched_node = None
+
+                # Update selection
+                modifiers = QApplication.keyboardModifiers()
+                if modifiers == Qt.ControlModifier:
+                    if clicked_node in self.selected_nodes:
+                        self.selected_nodes.remove(clicked_node)
+                    else:
+                        self.selected_nodes.add(clicked_node)
                 else:
-                    self.selected_nodes.add(clicked_node)
-            else:
-                # Clear selection if Ctrl is not pressed
-                self.selected_nodes = {clicked_node}
+                    self.selected_nodes = {clicked_node}
+                
+                # Update dragging state
+                self.selected_node = clicked_node
+                self.dragging = True
             
-            self.update_visualization()
+            elif event.button == 3:  # Right click
+                self.right_button_pressed = True
+                self.selected_nodes.add(clicked_node)
+            
+            # Force immediate update
+            self.draw_network()
+            self.canvas.draw()
+
+    def on_mouse_move(self, event):
+        """Handle mouse movement events"""
+        if not event.inaxes:
+            return
+
+        if self.right_button_pressed:
+            # Add nodes under cursor to selection
+            clicked_node = None
+            min_dist = float('inf')
+            for node in self.G.nodes():
+                x, y = self.pos[node]
+                dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
+                if dist < 0.15 and dist < min_dist:
+                    clicked_node = node
+                    min_dist = dist
+            
+            if clicked_node is not None and clicked_node not in self.selected_nodes:
+                self.selected_nodes.add(clicked_node)
+                self.draw_network()
+                self.canvas.draw()
+        
+        elif self.dragging and self.selected_node:
+            # Update position of dragged node
+            self.pos[self.selected_node] = (event.xdata, event.ydata)
+            self.draw_network()
+            self.canvas.draw()
+
+    def on_mouse_release(self, event):
+        """Handle mouse release events"""
+        if event.button == 3:  # Right click release
+            self.right_button_pressed = False
+        elif event.button == 1 and self.dragging:  # Left click release
+            self.dragging = False
+            # Force immediate update after drag
+            self.draw_network()
+            self.canvas.draw()
+
+    def connect_events(self):
+        """Connect all matplotlib event handlers"""
+        self.canvas.mpl_connect('button_press_event', self.on_mouse_press)
+        self.canvas.mpl_connect('motion_notify_event', self.on_mouse_move)
+        self.canvas.mpl_connect('button_release_event', self.on_mouse_release)
+        self.canvas.mpl_connect('button_press_event', self.on_double_click)
 
     def on_double_click(self, event):
         if event.button == 3 and len(self.selected_nodes) >= 2:  # Right double-click
@@ -340,22 +405,6 @@ class GTTFlowNet(QMainWindow):
             QMessageBox.information(self, "No Transactions",
                                  f"No transactions found {export_desc}")
     
-    def on_mouse_move(self, event):
-        """Handle mouse movement events"""
-        if not self.dragging or event.inaxes != self.ax or self.selected_node is None:
-            return
-
-        # Update position of selected node
-        self.pos[self.selected_node] = (event.xdata, event.ydata)
-        self.update_visualization()
-
-    def on_mouse_release(self, event):
-        """Handle mouse release events"""
-        if self.dragging:
-            self.dragging = False
-            # Don't reset selected_node to maintain selection
-            self.update_visualization()
-            
     def load_file(self):
         """Load and process the Excel file"""
         file_name, _ = QFileDialog.getOpenFileName(
@@ -485,11 +534,20 @@ class GTTFlowNet(QMainWindow):
         self.ax.clear()
         
         # Calculate node colors and sizes
-        node_colors = ['yellow' if node in self.selected_nodes else 'lightblue' for node in self.G.nodes()]
+        node_colors = []
+        for node in self.G.nodes():
+            if node == self.searched_node:
+                node_colors.append('yellow')  # Highlight searched node
+            elif node in self.selected_nodes:
+                node_colors.append('lightgreen')
+            else:
+                node_colors.append('lightblue')
+        
         node_sizes = self.calculate_node_sizes()
         
         # Set node border colors
-        node_edge_colors = ['red' if node in self.selected_nodes else 'gray' for node in self.G.nodes()]
+        node_edge_colors = ['red' if node == self.searched_node else 'orange' if node in self.selected_nodes else 'gray' for node in self.G.nodes()]
+        node_line_widths = [3 if node == self.searched_node else 2 if node in self.selected_nodes else 1 for node in self.G.nodes()]
         
         # Draw edges with arrows
         edge_width = self.edge_width_spin.value()
@@ -576,7 +634,7 @@ class GTTFlowNet(QMainWindow):
                              node_color=node_colors,
                              node_size=[node_sizes[node] for node in self.G.nodes()],
                              alpha=0.6,
-                             linewidths=2,
+                             linewidths=node_line_widths,
                              edgecolors=node_edge_colors,
                              ax=self.ax)
         
@@ -632,6 +690,27 @@ class GTTFlowNet(QMainWindow):
     def on_stats_release(self, event):
         self.stats_dragging = False
 
+    def save_position_state(self):
+        """Save current positions to history"""
+        if self.pos:
+            # Create a deep copy of current positions
+            current_state = {node: (x, y) for node, (x, y) in self.pos.items()}
+            self.position_history.append(current_state)
+            # Keep only the last max_history states
+            if len(self.position_history) > self.max_history:
+                self.position_history.pop(0)
+
+    def undo_position(self):
+        """Revert to previous position state"""
+        if self.position_history:
+            # Get the previous state
+            previous_state = self.position_history.pop()
+            # Update current positions
+            self.pos = previous_state
+            # Update visualization
+            self.draw_network()
+            self.canvas.draw()
+
     def create_control_panel(self):
         """Create the control panel with all settings"""
         # Create panel and layout
@@ -652,7 +731,29 @@ class GTTFlowNet(QMainWindow):
         
         file_group.setLayout(file_layout)
         
-        # Layout controls with animation and disperse buttons
+        # Search section
+        search_group = QGroupBox("Search")
+        search_layout = QVBoxLayout()
+        
+        # Add search input and button
+        search_input_layout = QHBoxLayout()
+        self.search_input = QComboBox()
+        self.search_input.setEditable(True)
+        self.search_input.setInsertPolicy(QComboBox.InsertPolicy.InsertAtTop)
+        self.search_button = QPushButton("Search")
+        self.search_button.clicked.connect(self.search_node)
+        search_input_layout.addWidget(self.search_input)
+        search_input_layout.addWidget(self.search_button)
+        
+        # Clear search button
+        self.clear_search_button = QPushButton("Clear Search")
+        self.clear_search_button.clicked.connect(self.clear_search)
+        
+        search_layout.addLayout(search_input_layout)
+        search_layout.addWidget(self.clear_search_button)
+        search_group.setLayout(search_layout)
+        
+        # Layout controls with animation, disperse, and undo buttons
         layout_group = QGroupBox("Layout Controls")
         layout_controls = QHBoxLayout()
         
@@ -665,6 +766,12 @@ class GTTFlowNet(QMainWindow):
         disperse_button = QPushButton("Disperse Nodes")
         disperse_button.clicked.connect(self.disperse_nodes)
         layout_controls.addWidget(disperse_button)
+        
+        # Undo button
+        self.undo_button = QPushButton("Undo")
+        self.undo_button.clicked.connect(self.undo_position)
+        self.undo_button.setToolTip("Undo last position change")
+        layout_controls.addWidget(self.undo_button)
         
         layout_group.setLayout(layout_controls)
         
@@ -761,6 +868,7 @@ class GTTFlowNet(QMainWindow):
         
         # Add all groups to main layout in the desired order
         layout.addWidget(file_group)
+        layout.addWidget(search_group)
         layout.addWidget(layout_group)
         layout.addWidget(date_group)
         layout.addWidget(amount_group)
@@ -778,6 +886,38 @@ class GTTFlowNet(QMainWindow):
         self.pos = nx.spring_layout(self.G)
         self.update_visualization()
         
+    def search_node(self):
+        """Search for a node by name and highlight it"""
+        search_text = self.search_input.currentText().strip()
+        if not search_text or not self.G:
+            return
+        
+        # Find exact or partial matches
+        matches = [node for node in self.G.nodes() if search_text.lower() in node.lower()]
+        
+        if matches:
+            # Update search history
+            if search_text not in [self.search_input.itemText(i) for i in range(self.search_input.count())]:
+                self.search_input.addItem(search_text)
+            
+            # Select the first matching node
+            self.searched_node = matches[0]
+            self.selected_nodes = {matches[0]}
+            self.update_visualization()
+            
+            # Center view on the found node
+            self.ax.set_xlim(self.pos[matches[0]][0] - 0.5, self.pos[matches[0]][0] + 0.5)
+            self.ax.set_ylim(self.pos[matches[0]][1] - 0.5, self.pos[matches[0]][1] + 0.5)
+            self.canvas.draw()
+        else:
+            QMessageBox.warning(self, "Search Result", "No matching node found.")
+
+    def clear_search(self):
+        """Clear search highlight"""
+        self.searched_node = None
+        self.selected_nodes.clear()
+        self.update_visualization()
+
 def main():
     app = QApplication(sys.argv)
     window = GTTFlowNet()
