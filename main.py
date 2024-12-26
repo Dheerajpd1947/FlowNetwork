@@ -170,12 +170,11 @@ class GTTFlowNet(QMainWindow):
             self.start_button.setText("Stop Animation")
             self.animation_timer.start(50)  # Update every 50ms
             self.animation_running = True
-            self.dragging = False  # Ensure dragging is disabled during animation
-            self.selected_node = None
         else:
             self.start_button.setText("Start Animation")
             self.animation_timer.stop()
             self.animation_running = False
+            self.dragging = False  # Reset dragging state
             # Force a final update to ensure the graph is in a stable state
             self.update_visualization()
             
@@ -183,13 +182,14 @@ class GTTFlowNet(QMainWindow):
         """Update force-directed layout"""
         if not self.pos or not self.G:
             return
-            
+
         if self.dragging:  # Skip force calculation if dragging
             return
-            
+
         # Calculate forces and update positions
         for node in self.G.nodes():
-            if node == self.selected_node:  # Skip selected node during animation
+            # Skip selected nodes during animation to maintain their positions
+            if node in self.selected_nodes or node == self.selected_node:
                 continue
                 
             # Initialize force components
@@ -216,55 +216,50 @@ class GTTFlowNet(QMainWindow):
                 fy += force * dy / dist
             
             # Update position with damping
-            if not self.dragging:  # Only update if not dragging
-                self.pos[node] = (
-                    self.pos[node][0] + fx * self.force_strength,
-                    self.pos[node][1] + fy * self.force_strength
-                )
+            self.pos[node] = (
+                self.pos[node][0] + fx * self.force_strength,
+                self.pos[node][1] + fy * self.force_strength
+            )
         
         self.draw_network()
         self.canvas.draw()
         
     def on_mouse_press(self, event):
         """Handle mouse press events"""
-        if not event.inaxes or not self.G or not self.pos:
+        if event.inaxes != self.ax or not self.G or not self.pos:
             return
-            
-        # Convert click coordinates to data coordinates
-        click_pos = np.array([event.xdata, event.ydata])
-        
-        # Find closest node
-        closest_node = None
+
+        if event.button != 1:  # Only handle left clicks
+            return
+
+        # Get clicked node
+        clicked_node = None
         min_dist = float('inf')
-        
         for node in self.G.nodes():
-            node_pos = np.array(self.pos[node])
-            dist = np.linalg.norm(node_pos - click_pos)
-            if dist < min_dist and dist < 0.1:  # Threshold for node selection
-                min_dist = dist
-                closest_node = node
-        
-        if closest_node:
-            if event.button == 1:  # Left click
-                if event.dblclick:
-                    self.export_selected_transactions(single_node=closest_node)
+            x, y = self.pos[node]
+            dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
+            if dist < 0.1:  # Increased threshold for easier selection
+                if dist < min_dist:
+                    clicked_node = node
+                    min_dist = dist
+
+        if clicked_node is not None:
+            self.selected_node = clicked_node
+            self.dragging = True
+            
+            # Check for Ctrl key using PyQt5
+            modifiers = QApplication.keyboardModifiers()
+            if modifiers == Qt.ControlModifier:
+                if clicked_node in self.selected_nodes:
+                    self.selected_nodes.remove(clicked_node)
                 else:
-                    modifiers = QApplication.keyboardModifiers()
-                    if modifiers == Qt.ControlModifier:
-                        # Multi-select with Ctrl
-                        if closest_node in self.selected_nodes:
-                            self.selected_nodes.remove(closest_node)
-                        else:
-                            self.selected_nodes.add(closest_node)
-                    else:
-                        # Single select and start dragging
-                        self.selected_nodes = {closest_node}
-                        if not self.animation_running:
-                            self.dragging = True
-                            self.selected_node = closest_node
-                    
-                    self.update_visualization()
-    
+                    self.selected_nodes.add(clicked_node)
+            else:
+                # Clear selection if Ctrl is not pressed
+                self.selected_nodes = {clicked_node}
+            
+            self.update_visualization()
+
     def on_double_click(self, event):
         if event.button == 3 and len(self.selected_nodes) >= 2:  # Right double-click
             self.export_selected_transactions()
@@ -346,29 +341,21 @@ class GTTFlowNet(QMainWindow):
                                  f"No transactions found {export_desc}")
     
     def on_mouse_move(self, event):
-        if self.dragging and self.selected_node and event.inaxes == self.ax:
-            # Update position of selected node
-            old_pos = self.pos[self.selected_node]
-            new_pos = (event.xdata, event.ydata)
-            delta_x = new_pos[0] - old_pos[0]
-            delta_y = new_pos[1] - old_pos[1]
-            
-            # Update selected node position
-            self.pos[self.selected_node] = new_pos
-            
-            # Move connected nodes proportionally
-            for neighbor in self.G.neighbors(self.selected_node):
-                self.pos[neighbor] = (
-                    self.pos[neighbor][0] + delta_x * 0.5,
-                    self.pos[neighbor][1] + delta_y * 0.5
-                )
-            
-            self.draw_network()
-    
+        """Handle mouse movement events"""
+        if not self.dragging or event.inaxes != self.ax or self.selected_node is None:
+            return
+
+        # Update position of selected node
+        self.pos[self.selected_node] = (event.xdata, event.ydata)
+        self.update_visualization()
+
     def on_mouse_release(self, event):
-        self.dragging = False
-        self.selected_node = None
-    
+        """Handle mouse release events"""
+        if self.dragging:
+            self.dragging = False
+            # Don't reset selected_node to maintain selection
+            self.update_visualization()
+            
     def load_file(self):
         """Load and process the Excel file"""
         file_name, _ = QFileDialog.getOpenFileName(
@@ -497,23 +484,12 @@ class GTTFlowNet(QMainWindow):
             
         self.ax.clear()
         
-        # Calculate node sizes
+        # Calculate node colors and sizes
+        node_colors = ['yellow' if node in self.selected_nodes else 'lightblue' for node in self.G.nodes()]
         node_sizes = self.calculate_node_sizes()
         
-        # Get connected nodes to selected nodes
-        connected_nodes = set()
-        for node in self.selected_nodes:
-            connected_nodes.update(self.G.neighbors(node))
-        
-        # Create color list for nodes
-        node_colors = []
-        for node in self.G.nodes():
-            if node in self.selected_nodes:
-                node_colors.append('red')
-            elif node in connected_nodes:
-                node_colors.append('orange')
-            else:
-                node_colors.append('lightblue')
+        # Set node border colors
+        node_edge_colors = ['red' if node in self.selected_nodes else 'gray' for node in self.G.nodes()]
         
         # Draw edges with arrows
         edge_width = self.edge_width_spin.value()
@@ -595,11 +571,13 @@ class GTTFlowNet(QMainWindow):
                                 alpha=0.7,
                                 pad=1))
         
-        # Draw nodes
+        # Draw nodes with distinct borders for selected nodes
         nx.draw_networkx_nodes(self.G, self.pos,
                              node_color=node_colors,
                              node_size=[node_sizes[node] for node in self.G.nodes()],
                              alpha=0.6,
+                             linewidths=2,
+                             edgecolors=node_edge_colors,
                              ax=self.ax)
         
         # Draw labels with smaller font size and white background
