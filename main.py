@@ -183,7 +183,7 @@ class GTTFlowNet(QMainWindow):
             # Reset dragging state
             self.dragging = False  # Reset dragging state
             # Ensure nodes can be selected after stopping animation
-            self.selected_node = None
+            # self.selected_node = None
             
     def update_layout(self):
         """Update force-directed layout"""
@@ -234,21 +234,40 @@ class GTTFlowNet(QMainWindow):
         self.draw_network()
         self.canvas.draw()
 
+    def get_node_at_position(self, x, y):
+        """Get the node at the specified position with scale-aware threshold"""
+        if not self.pos or not self.G:
+            return None
+
+        # Get current axis limits to calculate scale
+        x_min, x_max = self.ax.get_xlim()
+        y_min, y_max = self.ax.get_ylim()
+        
+        # Calculate adaptive threshold based on view scale
+        x_scale = abs(x_max - x_min)
+        y_scale = abs(y_max - y_min)
+        threshold = min(x_scale, y_scale) * 0.05  # 5% of smaller axis range
+        
+        min_dist = float('inf')
+        closest_node = None
+        
+        for node in self.G.nodes():
+            node_x, node_y = self.pos[node]
+            # Calculate distance in data coordinates
+            dist = np.sqrt((x - node_x)**2 + (y - node_y)**2)
+            if dist < threshold and dist < min_dist:
+                min_dist = dist
+                closest_node = node
+        
+        return closest_node
+
     def on_mouse_press(self, event):
         """Handle mouse press events"""
         if event.inaxes != self.ax or not self.G or not self.pos:
             return
 
-        # Get clicked node
-        clicked_node = None
-        min_dist = float('inf')
-        for node in self.G.nodes():
-            x, y = self.pos[node]
-            dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
-            if dist < 0.15:  # Increased threshold for easier selection
-                if dist < min_dist:
-                    clicked_node = node
-                    min_dist = dist
+        # Get clicked node using scale-aware selection
+        clicked_node = self.get_node_at_position(event.xdata, event.ydata)
 
         if clicked_node is not None:
             if event.button == 1:  # Left click
@@ -287,16 +306,8 @@ class GTTFlowNet(QMainWindow):
             return
 
         if self.right_button_pressed:
-            # Add nodes under cursor to selection
-            clicked_node = None
-            min_dist = float('inf')
-            for node in self.G.nodes():
-                x, y = self.pos[node]
-                dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
-                if dist < 0.15 and dist < min_dist:
-                    clicked_node = node
-                    min_dist = dist
-            
+            # Add nodes under cursor to selection using scale-aware selection
+            clicked_node = self.get_node_at_position(event.xdata, event.ydata)
             if clicked_node is not None and clicked_node not in self.selected_nodes:
                 self.selected_nodes.add(clicked_node)
                 self.draw_network()
@@ -539,16 +550,20 @@ class GTTFlowNet(QMainWindow):
             if node == self.searched_node:
                 node_colors.append('yellow')  # Highlight searched node
             elif node in self.selected_nodes:
-                node_colors.append('lightgreen')
+                node_colors.append('lightgreen')  # Selected nodes
             else:
-                node_colors.append('lightblue')
+                node_colors.append('lightblue')  # Regular nodes
         
         node_sizes = self.calculate_node_sizes()
         
-        # Set node border colors
-        node_edge_colors = ['red' if node == self.searched_node else 'orange' if node in self.selected_nodes else 'gray' for node in self.G.nodes()]
-        node_line_widths = [3 if node == self.searched_node else 2 if node in self.selected_nodes else 1 for node in self.G.nodes()]
-        
+        # Set node border colors and widths
+        node_edge_colors = ['red' if node == self.searched_node 
+                          else 'orange' if node in self.selected_nodes 
+                          else 'gray' for node in self.G.nodes()]
+        node_line_widths = [3 if node == self.searched_node 
+                          else 2 if node in self.selected_nodes 
+                          else 1 for node in self.G.nodes()]
+
         # Draw edges with arrows
         edge_width = self.edge_width_spin.value()
         arrow_size = self.arrow_size_spin.value()
@@ -629,7 +644,7 @@ class GTTFlowNet(QMainWindow):
                                 alpha=0.7,
                                 pad=1))
         
-        # Draw nodes with distinct borders for selected nodes
+        # Draw nodes with distinct borders
         nx.draw_networkx_nodes(self.G, self.pos,
                              node_color=node_colors,
                              node_size=[node_sizes[node] for node in self.G.nodes()],
@@ -696,15 +711,61 @@ class GTTFlowNet(QMainWindow):
             # Create a deep copy of current positions
             current_state = {node: (x, y) for node, (x, y) in self.pos.items()}
             self.position_history.append(current_state)
+            
             # Keep only the last max_history states
             if len(self.position_history) > self.max_history:
                 self.position_history.pop(0)
+            
+            # Print current state and last 5 states with markers
+            print("\n" + "="*50)
+            print("CURRENT STATE:")
+            print("-"*20)
+            self.print_state_summary(current_state)
+            
+            print("\nLAST 5 STATES:")
+            print("-"*20)
+            start_idx = max(0, len(self.position_history) - 5)
+            for i, state in enumerate(self.position_history[start_idx:], start=start_idx):
+                print(f"\nState {i}:")
+                print("-"*15)
+                self.print_state_summary(state)
+            print("="*50 + "\n")
+
+    def print_state_summary(self, state):
+        """Print a summary of node positions"""
+        if not state:
+            print("Empty state")
+            return
+            
+        # Print first 3 and last 3 nodes if more than 6 nodes
+        nodes = list(state.keys())
+        if len(nodes) > 6:
+            for node in nodes[:3]:
+                x, y = state[node]
+                print(f"Node {node}: ({x:.3f}, {y:.3f})")
+            print("...")
+            for node in nodes[-3:]:
+                x, y = state[node]
+                print(f"Node {node}: ({x:.3f}, {y:.3f})")
+        else:
+            for node, (x, y) in state.items():
+                print(f"Node {node}: ({x:.3f}, {y:.3f})")
 
     def undo_position(self):
         """Revert to previous position state"""
         if self.position_history:
             # Get the previous state
             previous_state = self.position_history.pop()
+            
+            print("\n" + "*"*50)
+            print("UNDO OPERATION")
+            print("*"*50)
+            print("\nRestoring to previous state:")
+            print("-"*25)
+            self.print_state_summary(previous_state)
+            print("\nRemaining states in history:", len(self.position_history))
+            print("*"*50 + "\n")
+            
             # Update current positions
             self.pos = previous_state
             # Update visualization
