@@ -8,8 +8,9 @@ from matplotlib.figure import Figure
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QFileDialog, QMessageBox, 
                             QLabel, QSpinBox, QDoubleSpinBox, QScrollArea, 
-                            QGroupBox, QDateTimeEdit, QComboBox, QSizePolicy)
-from PyQt5.QtCore import QTimer, Qt
+                            QGroupBox, QDateTimeEdit, QComboBox, QSizePolicy,
+                            QSplitter)
+from PyQt5.QtCore import QTimer, Qt, QSettings
 import numpy as np
 import json
 import os
@@ -25,85 +26,119 @@ class GTTFlowNet(QMainWindow):
         self.setWindowTitle("GTT FlowNet")
         self.setGeometry(100, 100, 1200, 800)
         
-        # Settings file path
-        self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analyzer_settings.json')
+        # Settings
+        self.settings = QSettings('GTTFlowNet', 'FlowNetAnalyzer')
+        self.min_panel_width = 300
+        self.default_panel_width = self.settings.value('panel_width', 400, type=int)
         
-        # Initialize data storage
+        # Initialize variables
         self.df = None
         self.G = nx.DiGraph()
         self.pos = None
         self.dragging = False
         self.selected_node = None
-        self.selected_nodes = set()  # For multiple node selection
+        self.selected_nodes = set()
         self.force_strength = 0.1
         self.repulsion = 1000
         self.edge_length = 100
         self.arrow_scale = 20
-        self.focused_node = None  # For node focus feature
-        self.stats_text = None  # Initialize stats_text
-        self.searched_node = None  # For search highlight
-        self.right_button_pressed = False  # For right-click selection
-        
-        # Position history for undo feature
+        self.focused_node = None
+        self.stats_text = None
+        self.searched_node = None
+        self.right_button_pressed = False
         self.position_history = []
-        self.max_history = 50  # Maximum number of positions to store
-        
-        # Initialize draggable stats frame
+        self.max_history = 50
         self.stats_dragging = False
-        self.stats_pos = [0.02, 0.98]  # Default position
-        self.stats_offset = (0, 0)  # Add offset for dragging
+        self.stats_pos = [0.02, 0.98]
+        self.stats_offset = (0, 0)
         
         # Create main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
         
-        # Create left control panel
-        control_panel = self.create_control_panel()
-        control_scroll = QScrollArea()
-        control_scroll.setWidget(control_panel)
-        control_scroll.setWidgetResizable(True)
-        control_scroll.setFixedWidth(300)
+        try:
+            # Create QSplitter
+            self.main_splitter = QSplitter(Qt.Horizontal)
+            self.main_splitter.splitterMoved.connect(self.on_splitter_moved)
+            main_layout.addWidget(self.main_splitter)
+            
+            # Create left control panel
+            control_panel = self.create_control_panel()
+            self.control_scroll = QScrollArea()
+            self.control_scroll.setWidget(control_panel)
+            self.control_scroll.setWidgetResizable(True)
+            self.control_scroll.setMinimumWidth(self.min_panel_width)
+            self.main_splitter.addWidget(self.control_scroll)
+            
+            # Create visualization panel
+            viz_panel = QWidget()
+            viz_layout = QVBoxLayout(viz_panel)
+            viz_layout.setContentsMargins(0, 0, 0, 0)
+            
+            # Create matplotlib figure
+            self.fig, self.ax = plt.subplots(figsize=(12, 8))
+            self.canvas = FigureCanvas(self.fig)
+            self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            
+            # Add matplotlib toolbar
+            self.toolbar = NavigationToolbar(self.canvas, viz_panel)
+            
+            # Add widgets to visualization layout
+            viz_layout.addWidget(self.toolbar)
+            viz_layout.addWidget(self.canvas)
+            self.main_splitter.addWidget(viz_panel)
+            
+            # Set initial splitter sizes
+            self.restore_panel_width()
+            
+            # Connect events
+            self.connect_events()
+            
+            # Setup animation timer
+            self.animation_timer = QTimer()
+            self.animation_timer.timeout.connect(self.update_layout)
+            
+        except Exception as e:
+            QMessageBox.critical(self, "Initialization Error",
+                               f"Error initializing application:\n{str(e)}")
+            raise
         
-        # Create visualization panel
-        viz_panel = QWidget()
-        viz_layout = QVBoxLayout(viz_panel)
-        
-        # Create matplotlib figure with larger size
-        self.figure, self.ax = plt.subplots(figsize=(12, 8))
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # Add matplotlib toolbar
-        self.toolbar = NavigationToolbar(self.canvas, viz_panel)
-        
-        # Connect mouse events
-        self.connect_events()
-        
-        # Connect additional mouse events for stats dragging
-        self.canvas.mpl_connect('button_press_event', self.on_stats_press)
-        self.canvas.mpl_connect('motion_notify_event', self.on_stats_move)
-        self.canvas.mpl_connect('button_release_event', self.on_stats_release)
-        
-        # Add widgets to visualization layout
-        viz_layout.addWidget(self.toolbar)
-        viz_layout.addWidget(self.canvas)
-        
-        # Add panels to main layout
-        main_layout.addWidget(control_scroll)
-        main_layout.addWidget(viz_panel, stretch=1)
-        
-        # Setup animation timer
-        self.animation_timer = QTimer()
-        self.animation_timer.timeout.connect(self.update_layout)
-        self.animation_running = False
-        
-        # Load saved settings
-        self.load_settings()
-        
+    def on_splitter_moved(self, pos, index):
+        """Save panel width when splitter is moved"""
+        try:
+            sizes = self.main_splitter.sizes()
+            if sizes and len(sizes) > 0:
+                panel_width = sizes[0]  # Width of the control panel
+                if panel_width >= self.min_panel_width:
+                    self.settings.setValue('panel_width', panel_width)
+        except Exception as e:
+            print(f"Error saving panel width: {str(e)}")
+            
+    def restore_panel_width(self):
+        """Restore the last used panel width"""
+        try:
+            total_width = self.width()
+            panel_width = min(max(self.default_panel_width, self.min_panel_width), 
+                            total_width // 2)  # Don't let it take more than half
+            viz_width = total_width - panel_width
+            self.main_splitter.setSizes([panel_width, viz_width])
+        except Exception as e:
+            print(f"Error restoring panel width: {str(e)}")
+            # Fallback to default proportions
+            self.main_splitter.setSizes([int(total_width * 0.3), int(total_width * 0.7)])
+            
     def closeEvent(self, event):
         """Save settings when closing the application"""
-        self.save_settings()
+        try:
+            self.save_settings()
+            # Save current panel width
+            sizes = self.main_splitter.sizes()
+            if sizes and len(sizes) > 0:
+                self.settings.setValue('panel_width', sizes[0])
+        except Exception as e:
+            print(f"Error in closeEvent: {str(e)}")
         event.accept()
         
     def save_settings(self):
@@ -772,6 +807,23 @@ class GTTFlowNet(QMainWindow):
             self.draw_network()
             self.canvas.draw()
 
+    def save_splitter_state(self):
+        """Save splitter state to settings"""
+        settings = QSettings('GTTFlowNet', 'FlowNetAnalyzer')
+        settings.setValue('splitter_state', self.main_splitter.saveState())
+        settings.setValue('splitter_sizes', self.main_splitter.sizes())
+        
+    def load_splitter_state(self):
+        """Load splitter state from settings"""
+        settings = QSettings('GTTFlowNet', 'FlowNetAnalyzer')
+        splitter_state = settings.value('splitter_state')
+        splitter_sizes = settings.value('splitter_sizes')
+        
+        if splitter_state:
+            self.main_splitter.restoreState(splitter_state)
+        if splitter_sizes:
+            self.main_splitter.setSizes(splitter_sizes)
+        
     def create_control_panel(self):
         """Create the control panel with all settings"""
         # Create panel and layout

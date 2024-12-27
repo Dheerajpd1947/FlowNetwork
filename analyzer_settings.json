@@ -1,1 +1,1 @@
-{"force_strength": 0.1, "repulsion": 1000, "edge_length": 100, "arrow_scale": 20, "min_transaction": 0, "min_aggregated": 0, "weight_type": "Total Volume", "weight_factor": 100, "edge_width": 2, "arrow_size": 10, "analytics": "None"}
+{"force_strength": 0.1, "repulsion": 1000, "edge_length": 100, "arrow_scale": 20, "min_transaction": 50000, "min_aggregated": 100000, "weight_type": "Total Volume", "weight_factor": 100, "edge_width": 2, "arrow_size": 10, "analytics": "None"}
