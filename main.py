@@ -8,7 +8,7 @@ from matplotlib.figure import Figure
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QFileDialog, QMessageBox, 
                             QLabel, QSpinBox, QDoubleSpinBox, QScrollArea, 
-                            QGroupBox, QDateTimeEdit, QComboBox, QSizePolicy, QSplitter)
+                            QGroupBox, QDateTimeEdit, QComboBox, QSizePolicy)
 from PyQt5.QtCore import QTimer, Qt
 import numpy as np
 import json
@@ -24,85 +24,6 @@ class GTTFlowNet(QMainWindow):
         super().__init__()
         self.setWindowTitle("GTT FlowNet")
         self.setGeometry(100, 100, 1200, 800)
-        
-        # Apply global application style
-        self.setStyleSheet("""
-            QWidget {
-                font-size: 10pt;
-            }
-            QPushButton {
-                min-width: 100px;
-                padding: 4px;
-            }
-            QLabel {
-                font-size: 10pt;
-            }
-            QComboBox {
-                min-width: 120px;
-                padding: 3px;
-            }
-            QSpinBox {
-                min-width: 80px;
-                padding: 3px;
-            }
-            QGroupBox {
-                font-size: 10pt;
-                font-weight: bold;
-                margin-top: 10px;
-            }
-            QSplitter::handle {
-                background: #CCCCCC;
-            }
-            QSplitter::handle:horizontal {
-                width: 4px;
-            }
-        """)
-        
-        # Create main splitter
-        main_splitter = QSplitter(Qt.Horizontal)
-        self.setCentralWidget(main_splitter)
-        
-        # Create and add control panel to a scroll area
-        control_panel = self.create_control_panel()
-        control_scroll = QScrollArea()
-        control_scroll.setWidget(control_panel)
-        control_scroll.setWidgetResizable(True)
-        control_scroll.setMinimumWidth(200)  # Minimum width
-        main_splitter.addWidget(control_scroll)
-        
-        # Create visualization panel
-        viz_panel = QWidget()
-        viz_layout = QVBoxLayout(viz_panel)
-        
-        # Create matplotlib figure with larger size
-        self.figure, self.ax = plt.subplots(figsize=(12, 8))
-        self.canvas = FigureCanvas(self.figure)
-        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        
-        # Add matplotlib toolbar
-        self.toolbar = NavigationToolbar(self.canvas, viz_panel)
-        
-        # Connect mouse events
-        self.connect_events()
-        
-        # Connect additional mouse events for stats dragging
-        self.canvas.mpl_connect('button_press_event', self.on_stats_press)
-        self.canvas.mpl_connect('motion_notify_event', self.on_stats_move)
-        self.canvas.mpl_connect('button_release_event', self.on_stats_release)
-        
-        # Add widgets to visualization layout
-        viz_layout.addWidget(self.toolbar)
-        viz_layout.addWidget(self.canvas)
-        
-        # Add visualization panel to splitter
-        main_splitter.addWidget(viz_panel)
-        
-        # Set initial sizes (30% for control panel, 70% for visualization)
-        main_splitter.setSizes([300, 900])
-        
-        # Set stretch factors
-        main_splitter.setStretchFactor(0, 0)  # Control panel doesn't stretch
-        main_splitter.setStretchFactor(1, 1)  # Visualization panel stretches
         
         # Settings file path
         self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analyzer_settings.json')
@@ -131,6 +52,46 @@ class GTTFlowNet(QMainWindow):
         self.stats_dragging = False
         self.stats_pos = [0.02, 0.98]  # Default position
         self.stats_offset = (0, 0)  # Add offset for dragging
+        
+        # Create main widget and layout
+        main_widget = QWidget()
+        self.setCentralWidget(main_widget)
+        main_layout = QHBoxLayout(main_widget)
+        
+        # Create left control panel
+        control_panel = self.create_control_panel()
+        control_scroll = QScrollArea()
+        control_scroll.setWidget(control_panel)
+        control_scroll.setWidgetResizable(True)
+        control_scroll.setFixedWidth(300)
+        
+        # Create visualization panel
+        viz_panel = QWidget()
+        viz_layout = QVBoxLayout(viz_panel)
+        
+        # Create matplotlib figure with larger size
+        self.figure, self.ax = plt.subplots(figsize=(12, 8))
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Add matplotlib toolbar
+        self.toolbar = NavigationToolbar(self.canvas, viz_panel)
+        
+        # Connect mouse events
+        self.connect_events()
+        
+        # Connect additional mouse events for stats dragging
+        self.canvas.mpl_connect('button_press_event', self.on_stats_press)
+        self.canvas.mpl_connect('motion_notify_event', self.on_stats_move)
+        self.canvas.mpl_connect('button_release_event', self.on_stats_release)
+        
+        # Add widgets to visualization layout
+        viz_layout.addWidget(self.toolbar)
+        viz_layout.addWidget(self.canvas)
+        
+        # Add panels to main layout
+        main_layout.addWidget(control_scroll)
+        main_layout.addWidget(viz_panel, stretch=1)
         
         # Setup animation timer
         self.animation_timer = QTimer()
@@ -815,7 +776,6 @@ class GTTFlowNet(QMainWindow):
         """Create the control panel with all settings"""
         # Create panel and layout
         panel = QWidget()
-        panel.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)  # Make panel resizable
         layout = QVBoxLayout(panel)
         
         # File controls
