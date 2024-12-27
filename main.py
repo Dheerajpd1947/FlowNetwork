@@ -8,9 +8,8 @@ from matplotlib.figure import Figure
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
                             QHBoxLayout, QPushButton, QFileDialog, QMessageBox, 
                             QLabel, QSpinBox, QDoubleSpinBox, QScrollArea, 
-                            QGroupBox, QDateTimeEdit, QComboBox, QSizePolicy,
-                            QSplitter)
-from PyQt5.QtCore import QTimer, Qt, QSettings
+                            QGroupBox, QDateTimeEdit, QComboBox, QSizePolicy)
+from PyQt5.QtCore import QTimer, Qt
 import numpy as np
 import json
 import os
@@ -26,119 +25,85 @@ class GTTFlowNet(QMainWindow):
         self.setWindowTitle("GTT FlowNet")
         self.setGeometry(100, 100, 1200, 800)
         
-        # Settings
-        self.settings = QSettings('GTTFlowNet', 'FlowNetAnalyzer')
-        self.min_panel_width = 300
-        self.default_panel_width = self.settings.value('panel_width', 400, type=int)
+        # Settings file path
+        self.settings_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'analyzer_settings.json')
         
-        # Initialize variables
+        # Initialize data storage
         self.df = None
         self.G = nx.DiGraph()
         self.pos = None
         self.dragging = False
         self.selected_node = None
-        self.selected_nodes = set()
+        self.selected_nodes = set()  # For multiple node selection
         self.force_strength = 0.1
         self.repulsion = 1000
         self.edge_length = 100
         self.arrow_scale = 20
-        self.focused_node = None
-        self.stats_text = None
-        self.searched_node = None
-        self.right_button_pressed = False
+        self.focused_node = None  # For node focus feature
+        self.stats_text = None  # Initialize stats_text
+        self.searched_node = None  # For search highlight
+        self.right_button_pressed = False  # For right-click selection
+        
+        # Position history for undo feature
         self.position_history = []
-        self.max_history = 50
+        self.max_history = 50  # Maximum number of positions to store
+        
+        # Initialize draggable stats frame
         self.stats_dragging = False
-        self.stats_pos = [0.02, 0.98]
-        self.stats_offset = (0, 0)
+        self.stats_pos = [0.02, 0.98]  # Default position
+        self.stats_offset = (0, 0)  # Add offset for dragging
         
         # Create main widget and layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
         main_layout = QHBoxLayout(main_widget)
-        main_layout.setContentsMargins(0, 0, 0, 0)
         
-        try:
-            # Create QSplitter
-            self.main_splitter = QSplitter(Qt.Horizontal)
-            self.main_splitter.splitterMoved.connect(self.on_splitter_moved)
-            main_layout.addWidget(self.main_splitter)
-            
-            # Create left control panel
-            control_panel = self.create_control_panel()
-            self.control_scroll = QScrollArea()
-            self.control_scroll.setWidget(control_panel)
-            self.control_scroll.setWidgetResizable(True)
-            self.control_scroll.setMinimumWidth(self.min_panel_width)
-            self.main_splitter.addWidget(self.control_scroll)
-            
-            # Create visualization panel
-            viz_panel = QWidget()
-            viz_layout = QVBoxLayout(viz_panel)
-            viz_layout.setContentsMargins(0, 0, 0, 0)
-            
-            # Create matplotlib figure
-            self.fig, self.ax = plt.subplots(figsize=(12, 8))
-            self.canvas = FigureCanvas(self.fig)
-            self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-            
-            # Add matplotlib toolbar
-            self.toolbar = NavigationToolbar(self.canvas, viz_panel)
-            
-            # Add widgets to visualization layout
-            viz_layout.addWidget(self.toolbar)
-            viz_layout.addWidget(self.canvas)
-            self.main_splitter.addWidget(viz_panel)
-            
-            # Set initial splitter sizes
-            self.restore_panel_width()
-            
-            # Connect events
-            self.connect_events()
-            
-            # Setup animation timer
-            self.animation_timer = QTimer()
-            self.animation_timer.timeout.connect(self.update_layout)
-            
-        except Exception as e:
-            QMessageBox.critical(self, "Initialization Error",
-                               f"Error initializing application:\n{str(e)}")
-            raise
+        # Create left control panel
+        control_panel = self.create_control_panel()
+        control_scroll = QScrollArea()
+        control_scroll.setWidget(control_panel)
+        control_scroll.setWidgetResizable(True)
+        control_scroll.setFixedWidth(300)
         
-    def on_splitter_moved(self, pos, index):
-        """Save panel width when splitter is moved"""
-        try:
-            sizes = self.main_splitter.sizes()
-            if sizes and len(sizes) > 0:
-                panel_width = sizes[0]  # Width of the control panel
-                if panel_width >= self.min_panel_width:
-                    self.settings.setValue('panel_width', panel_width)
-        except Exception as e:
-            print(f"Error saving panel width: {str(e)}")
-            
-    def restore_panel_width(self):
-        """Restore the last used panel width"""
-        try:
-            total_width = self.width()
-            panel_width = min(max(self.default_panel_width, self.min_panel_width), 
-                            total_width // 2)  # Don't let it take more than half
-            viz_width = total_width - panel_width
-            self.main_splitter.setSizes([panel_width, viz_width])
-        except Exception as e:
-            print(f"Error restoring panel width: {str(e)}")
-            # Fallback to default proportions
-            self.main_splitter.setSizes([int(total_width * 0.3), int(total_width * 0.7)])
-            
+        # Create visualization panel
+        viz_panel = QWidget()
+        viz_layout = QVBoxLayout(viz_panel)
+        
+        # Create matplotlib figure with larger size
+        self.figure, self.ax = plt.subplots(figsize=(12, 8))
+        self.canvas = FigureCanvas(self.figure)
+        self.canvas.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        
+        # Add matplotlib toolbar
+        self.toolbar = NavigationToolbar(self.canvas, viz_panel)
+        
+        # Connect mouse events
+        self.connect_events()
+        
+        # Connect additional mouse events for stats dragging
+        self.canvas.mpl_connect('button_press_event', self.on_stats_press)
+        self.canvas.mpl_connect('motion_notify_event', self.on_stats_move)
+        self.canvas.mpl_connect('button_release_event', self.on_stats_release)
+        
+        # Add widgets to visualization layout
+        viz_layout.addWidget(self.toolbar)
+        viz_layout.addWidget(self.canvas)
+        
+        # Add panels to main layout
+        main_layout.addWidget(control_scroll)
+        main_layout.addWidget(viz_panel, stretch=1)
+        
+        # Setup animation timer
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self.update_layout)
+        self.animation_running = False
+        
+        # Load saved settings
+        self.load_settings()
+        
     def closeEvent(self, event):
         """Save settings when closing the application"""
-        try:
-            self.save_settings()
-            # Save current panel width
-            sizes = self.main_splitter.sizes()
-            if sizes and len(sizes) > 0:
-                self.settings.setValue('panel_width', sizes[0])
-        except Exception as e:
-            print(f"Error in closeEvent: {str(e)}")
+        self.save_settings()
         event.accept()
         
     def save_settings(self):
@@ -218,7 +183,7 @@ class GTTFlowNet(QMainWindow):
             # Reset dragging state
             self.dragging = False  # Reset dragging state
             # Ensure nodes can be selected after stopping animation
-            # self.selected_node = None
+            self.selected_node = None
             
     def update_layout(self):
         """Update force-directed layout"""
@@ -269,40 +234,21 @@ class GTTFlowNet(QMainWindow):
         self.draw_network()
         self.canvas.draw()
 
-    def get_node_at_position(self, x, y):
-        """Get the node at the specified position with scale-aware threshold"""
-        if not self.pos or not self.G:
-            return None
-
-        # Get current axis limits to calculate scale
-        x_min, x_max = self.ax.get_xlim()
-        y_min, y_max = self.ax.get_ylim()
-        
-        # Calculate adaptive threshold based on view scale
-        x_scale = abs(x_max - x_min)
-        y_scale = abs(y_max - y_min)
-        threshold = min(x_scale, y_scale) * 0.05  # 5% of smaller axis range
-        
-        min_dist = float('inf')
-        closest_node = None
-        
-        for node in self.G.nodes():
-            node_x, node_y = self.pos[node]
-            # Calculate distance in data coordinates
-            dist = np.sqrt((x - node_x)**2 + (y - node_y)**2)
-            if dist < threshold and dist < min_dist:
-                min_dist = dist
-                closest_node = node
-        
-        return closest_node
-
     def on_mouse_press(self, event):
         """Handle mouse press events"""
         if event.inaxes != self.ax or not self.G or not self.pos:
             return
 
-        # Get clicked node using scale-aware selection
-        clicked_node = self.get_node_at_position(event.xdata, event.ydata)
+        # Get clicked node
+        clicked_node = None
+        min_dist = float('inf')
+        for node in self.G.nodes():
+            x, y = self.pos[node]
+            dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
+            if dist < 0.15:  # Increased threshold for easier selection
+                if dist < min_dist:
+                    clicked_node = node
+                    min_dist = dist
 
         if clicked_node is not None:
             if event.button == 1:  # Left click
@@ -341,8 +287,16 @@ class GTTFlowNet(QMainWindow):
             return
 
         if self.right_button_pressed:
-            # Add nodes under cursor to selection using scale-aware selection
-            clicked_node = self.get_node_at_position(event.xdata, event.ydata)
+            # Add nodes under cursor to selection
+            clicked_node = None
+            min_dist = float('inf')
+            for node in self.G.nodes():
+                x, y = self.pos[node]
+                dist = np.sqrt((event.xdata - x)**2 + (event.ydata - y)**2)
+                if dist < 0.15 and dist < min_dist:
+                    clicked_node = node
+                    min_dist = dist
+            
             if clicked_node is not None and clicked_node not in self.selected_nodes:
                 self.selected_nodes.add(clicked_node)
                 self.draw_network()
@@ -585,20 +539,16 @@ class GTTFlowNet(QMainWindow):
             if node == self.searched_node:
                 node_colors.append('yellow')  # Highlight searched node
             elif node in self.selected_nodes:
-                node_colors.append('lightgreen')  # Selected nodes
+                node_colors.append('lightgreen')
             else:
-                node_colors.append('lightblue')  # Regular nodes
+                node_colors.append('lightblue')
         
         node_sizes = self.calculate_node_sizes()
         
-        # Set node border colors and widths
-        node_edge_colors = ['red' if node == self.searched_node 
-                          else 'orange' if node in self.selected_nodes 
-                          else 'gray' for node in self.G.nodes()]
-        node_line_widths = [3 if node == self.searched_node 
-                          else 2 if node in self.selected_nodes 
-                          else 1 for node in self.G.nodes()]
-
+        # Set node border colors
+        node_edge_colors = ['red' if node == self.searched_node else 'orange' if node in self.selected_nodes else 'gray' for node in self.G.nodes()]
+        node_line_widths = [3 if node == self.searched_node else 2 if node in self.selected_nodes else 1 for node in self.G.nodes()]
+        
         # Draw edges with arrows
         edge_width = self.edge_width_spin.value()
         arrow_size = self.arrow_size_spin.value()
@@ -679,7 +629,7 @@ class GTTFlowNet(QMainWindow):
                                 alpha=0.7,
                                 pad=1))
         
-        # Draw nodes with distinct borders
+        # Draw nodes with distinct borders for selected nodes
         nx.draw_networkx_nodes(self.G, self.pos,
                              node_color=node_colors,
                              node_size=[node_sizes[node] for node in self.G.nodes()],
@@ -746,84 +696,21 @@ class GTTFlowNet(QMainWindow):
             # Create a deep copy of current positions
             current_state = {node: (x, y) for node, (x, y) in self.pos.items()}
             self.position_history.append(current_state)
-            
             # Keep only the last max_history states
             if len(self.position_history) > self.max_history:
                 self.position_history.pop(0)
-            
-            # Print current state and last 5 states with markers
-            print("\n" + "="*50)
-            print("CURRENT STATE:")
-            print("-"*20)
-            self.print_state_summary(current_state)
-            
-            print("\nLAST 5 STATES:")
-            print("-"*20)
-            start_idx = max(0, len(self.position_history) - 5)
-            for i, state in enumerate(self.position_history[start_idx:], start=start_idx):
-                print(f"\nState {i}:")
-                print("-"*15)
-                self.print_state_summary(state)
-            print("="*50 + "\n")
-
-    def print_state_summary(self, state):
-        """Print a summary of node positions"""
-        if not state:
-            print("Empty state")
-            return
-            
-        # Print first 3 and last 3 nodes if more than 6 nodes
-        nodes = list(state.keys())
-        if len(nodes) > 6:
-            for node in nodes[:3]:
-                x, y = state[node]
-                print(f"Node {node}: ({x:.3f}, {y:.3f})")
-            print("...")
-            for node in nodes[-3:]:
-                x, y = state[node]
-                print(f"Node {node}: ({x:.3f}, {y:.3f})")
-        else:
-            for node, (x, y) in state.items():
-                print(f"Node {node}: ({x:.3f}, {y:.3f})")
 
     def undo_position(self):
         """Revert to previous position state"""
         if self.position_history:
             # Get the previous state
             previous_state = self.position_history.pop()
-            
-            print("\n" + "*"*50)
-            print("UNDO OPERATION")
-            print("*"*50)
-            print("\nRestoring to previous state:")
-            print("-"*25)
-            self.print_state_summary(previous_state)
-            print("\nRemaining states in history:", len(self.position_history))
-            print("*"*50 + "\n")
-            
             # Update current positions
             self.pos = previous_state
             # Update visualization
             self.draw_network()
             self.canvas.draw()
 
-    def save_splitter_state(self):
-        """Save splitter state to settings"""
-        settings = QSettings('GTTFlowNet', 'FlowNetAnalyzer')
-        settings.setValue('splitter_state', self.main_splitter.saveState())
-        settings.setValue('splitter_sizes', self.main_splitter.sizes())
-        
-    def load_splitter_state(self):
-        """Load splitter state from settings"""
-        settings = QSettings('GTTFlowNet', 'FlowNetAnalyzer')
-        splitter_state = settings.value('splitter_state')
-        splitter_sizes = settings.value('splitter_sizes')
-        
-        if splitter_state:
-            self.main_splitter.restoreState(splitter_state)
-        if splitter_sizes:
-            self.main_splitter.setSizes(splitter_sizes)
-        
     def create_control_panel(self):
         """Create the control panel with all settings"""
         # Create panel and layout
