@@ -6,7 +6,8 @@ A desktop application that analyzes bank statements from Excel files and creates
 - Import bank statements from Excel files
 - Visualize transaction networks using force-directed graphs
 - Interactive network visualization
-- Automatic clustering of common senders and recipients
+- Automatic clustering of network of couterparties
+- Help in detecting pattern of suspecious transactions
 
 ## Requirements
 - Python 3.8 or higher
